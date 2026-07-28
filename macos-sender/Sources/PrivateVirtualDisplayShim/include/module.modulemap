@@ -1,0 +1,4 @@
+module PrivateVirtualDisplayShim [system] {
+    header "CGVirtualDisplayPrivate.h"
+    export *
+}
