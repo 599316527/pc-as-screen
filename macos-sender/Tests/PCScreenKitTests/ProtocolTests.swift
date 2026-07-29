@@ -65,3 +65,20 @@ func cursorPacketIncludesTypeLengthTimestampAndCoordinates() {
     #expect(Array(packet[13...20]) == [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc8])
     #expect(Array(packet[21...24]) == [0x12, 0x34, 0xab, 0xcd])
 }
+
+@Test
+func parsesMouseClickPacketFromReceiver() throws {
+    let header = Data([
+        FrameType.mouseClick.rawValue,
+        0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc8,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc8,
+    ])
+    let payload = Data([0x12, 0x34, 0xab, 0xcd])
+
+    let click = try PCScreenProtocol.parseMouseClickPacket(header: header, payload: payload)
+
+    #expect(click.x == 0x1234)
+    #expect(click.y == 0xabcd)
+    #expect(click.timestampMicros == 456)
+}

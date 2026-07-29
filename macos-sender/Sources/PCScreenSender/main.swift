@@ -3,6 +3,8 @@ import PCScreenKit
 
 struct SenderCLI {
     let config: StreamConfiguration
+    let usesTestPattern: Bool
+    let durationSeconds: Double
 
     init(arguments: [String]) throws {
         var values: [String: String] = [:]
@@ -27,6 +29,8 @@ struct SenderCLI {
         let bitrate = try Self.parseInt(values["bitrate"], defaultValue: 8_000_000, name: "bitrate")
         let portInt = try Self.parseInt(values["port"], defaultValue: 6000, name: "port")
         let hideCursor = try Self.parseBool(values["hide-cursor"], defaultValue: false, name: "hide-cursor")
+        self.usesTestPattern = try Self.parseBool(values["test-pattern"], defaultValue: false, name: "test-pattern")
+        self.durationSeconds = try Self.parseDouble(values["duration"], defaultValue: 5, name: "duration")
         guard let port = UInt16(exactly: portInt) else {
             throw PCScreenError.invalidArgument("Port must fit in UInt16, got \(portInt).")
         }
@@ -45,6 +49,13 @@ struct SenderCLI {
     }
 
     func run() async throws {
+        if usesTestPattern {
+            let session = try TestPatternStreamingSession(config: config, durationSeconds: durationSeconds)
+            try await session.run()
+            print("Test pattern streamed to \(config.host):\(config.port) for \(durationSeconds) seconds.")
+            return
+        }
+
         let session = try StreamingSession(config: config)
         try await session.run()
         print("Streaming started to \(config.host):\(config.port). Press Ctrl+C to stop.")
@@ -70,6 +81,14 @@ struct SenderCLI {
         default:
             throw PCScreenError.invalidArgument("Argument --\(name) must be true or false, got \(value).")
         }
+    }
+
+    private static func parseDouble(_ value: String?, defaultValue: Double, name: String) throws -> Double {
+        guard let value else { return defaultValue }
+        guard let parsed = Double(value) else {
+            throw PCScreenError.invalidArgument("Argument --\(name) must be a number, got \(value).")
+        }
+        return parsed
     }
 
     private static func normalizedPassword(_ value: String?) -> String? {

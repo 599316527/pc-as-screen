@@ -1,6 +1,6 @@
 # Stream Protocol
 
-The MVP transport is a single TCP connection carrying one H.264 video stream in Annex-B format.
+The MVP transport is a single TCP connection carrying one H.264 video stream in Annex-B format plus a small mouse-click return path for the iPad receiver.
 
 ## Connection model
 
@@ -9,7 +9,8 @@ The MVP transport is a single TCP connection carrying one H.264 video stream in 
 3. If both sides are configured with a shared password, they complete the authentication handshake.
 4. The sender writes a fixed-size stream header.
 5. The sender continuously writes frame packets until disconnect.
-6. After a disconnect, the receiver closes the current player process and waits for the next sender.
+6. The iPad receiver may write mouse-click packets back on the same TCP connection after the stream header is received.
+7. After a disconnect, the receiver closes the current player process and waits for the next sender.
 
 No keepalive, retransmission, or multiplexing is included in this MVP. The receiver handles one active sender at a time.
 
@@ -58,6 +59,7 @@ Frame types:
 - `1`: delta frame
 - `2`: key frame
 - `3`: cursor position
+- `4`: mouse click
 
 ## Video payload
 
@@ -74,13 +76,27 @@ Cursor packets use frame type `3` and a 4-byte payload:
 | 0      | 2    | u16 be | x position normalized to `0...65535` across the captured display |
 | 2      | 2    | u16 be | y position normalized to `0...65535` across the captured display |
 
-The macOS sender does not embed the cursor into the H.264 video stream. It sends cursor packets separately so the Windows receiver can update the local cursor with less video pipeline latency.
+The macOS sender does not embed the cursor into the H.264 video stream. It sends cursor packets separately so receivers can draw or move a pointer with less video pipeline latency. The iPad receiver draws a local pointer overlay at the normalized position.
+
+## Mouse click payload
+
+The iPad receiver sends mouse-click packets back to the macOS sender with frame type `4` and a 4-byte payload:
+
+| Offset | Size | Type   | Description |
+| ------ | ---- | ------ | ----------- |
+| 0      | 2    | u16 be | x position normalized to `0...65535` across the displayed video content |
+| 2      | 2    | u16 be | y position normalized to `0...65535` across the displayed video content |
+
+The macOS sender maps the normalized coordinates onto the virtual display bounds and posts a left mouse down/up pair. The iPad receiver computes coordinates against the aspect-fit video content rect; taps in letterboxed or pillarboxed padding are ignored.
 
 ## Decoder expectations
 
 - A compliant receiver does not need an MP4 container or RTP framing.
 - The receiver should preserve ordering exactly as received over TCP.
 - Timestamps are included for future use, but the current MVP player path does not actively schedule on them.
+- The iPad receiver consumes the same Annex-B payload, extracts SPS/PPS from key frames, converts NAL units to 4-byte length-prefixed AVCC payloads, and submits them to the native H.264 decode/display pipeline.
+- iPad key-frame decode requires both SPS and PPS to have been received. A key frame without parameter sets is treated as a stream error rather than guessed.
+- The macOS sender must keep reading from the TCP connection after startup if it wants to receive iPad mouse-click packets.
 
 ## Known limitations
 
@@ -88,4 +104,5 @@ The macOS sender does not embed the cursor into the H.264 video stream. It sends
 - There is no codec negotiation; receiver and sender are hard-coded to H.264.
 - There is no explicit parameter renegotiation on resize.
 - Password authentication does not encrypt the video payload.
-- The current cursor side-channel moves the Windows system cursor over the `ffplay` window; it is not a composited in-window overlay.
+- The cursor side-channel moves the Windows system cursor over the `ffplay` window. The iPad receiver draws an in-app pointer overlay.
+- Mouse-click return is currently implemented for the iPad receiver only; keyboard input is not included.

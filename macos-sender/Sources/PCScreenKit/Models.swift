@@ -113,6 +113,18 @@ public struct CursorPosition: Sendable, Equatable {
     }
 }
 
+public struct MouseClick: Sendable, Equatable {
+    public var x: UInt16
+    public var y: UInt16
+    public var timestampMicros: UInt64
+
+    public init(x: UInt16, y: UInt16, timestampMicros: UInt64) {
+        self.x = x
+        self.y = y
+        self.timestampMicros = timestampMicros
+    }
+}
+
 public enum PCScreenError: Error, CustomStringConvertible, Sendable {
     case invalidArgument(String)
     case capture(String)

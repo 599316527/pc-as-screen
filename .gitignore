@@ -8,6 +8,13 @@
 # SwiftPM
 .build/
 macos-sender/.build/
+ipad-receiver/.build/
+ipad-receiver/.swiftpm/
+
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+**/xcuserdata/
 
 # Python
 __pycache__/

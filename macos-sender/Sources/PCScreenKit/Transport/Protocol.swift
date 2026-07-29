@@ -6,6 +6,7 @@ public enum FrameType: UInt8, Sendable {
     case delta = 1
     case key = 2
     case cursor = 3
+    case mouseClick = 4
 }
 
 public enum PCScreenProtocol {
@@ -54,6 +55,27 @@ public enum PCScreenProtocol {
         return data
     }
 
+    public static func parseMouseClickPacket(header: Data, payload: Data) throws -> MouseClick {
+        guard header.count == 21 else {
+            throw PCScreenError.network("Input packet header must be 21 bytes, got \(header.count).")
+        }
+        guard header[0] == FrameType.mouseClick.rawValue else {
+            throw PCScreenError.network("Input packet type \(header[0]) is not a mouse click.")
+        }
+        let payloadLength = Int(readUInt32(header, at: 1))
+        guard payloadLength == payload.count else {
+            throw PCScreenError.network("Input packet payload length mismatch: expected \(payloadLength), got \(payload.count).")
+        }
+        guard payload.count == 4 else {
+            throw PCScreenError.network("Mouse click payload must be 4 bytes, got \(payload.count).")
+        }
+        return MouseClick(
+            x: readUInt16(payload, at: 0),
+            y: readUInt16(payload, at: 2),
+            timestampMicros: readUInt64(header, at: 5)
+        )
+    }
+
     public static func makeAuthDigest(password: String, nonce: Data) -> Data {
         let key = SymmetricKey(data: Data(password.utf8))
         var payload = Data()
@@ -72,5 +94,24 @@ public enum PCScreenProtocol {
 
     public static func bigEndianBytes<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
         withUnsafeBytes(of: value.bigEndian, Array.init)
+    }
+
+    private static func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
+    }
+
+    private static func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        (UInt32(data[offset]) << 24)
+            | (UInt32(data[offset + 1]) << 16)
+            | (UInt32(data[offset + 2]) << 8)
+            | UInt32(data[offset + 3])
+    }
+
+    private static func readUInt64(_ data: Data, at offset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for index in offset..<(offset + 8) {
+            value = (value << 8) | UInt64(data[index])
+        }
+        return value
     }
 }

@@ -76,6 +76,10 @@ public final class TCPSender: @unchecked Sendable {
         }
     }
 
+    public func startReceivingInput(onMouseClick: @escaping @Sendable (MouseClick) -> Void) {
+        receiveInputHeader(onMouseClick: onMouseClick)
+    }
+
     public func close() {
         connection.cancel()
     }
@@ -157,7 +161,37 @@ public final class TCPSender: @unchecked Sendable {
         }
     }
 
+    private func receiveInputHeader(onMouseClick: @escaping @Sendable (MouseClick) -> Void) {
+        receiveExactly(21) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure:
+                return
+            case .success(let header):
+                let payloadLength = Int(Self.readUInt32(header, at: 1))
+                self.receiveExactly(payloadLength) { [weak self] payloadResult in
+                    guard let self else { return }
+                    defer {
+                        self.receiveInputHeader(onMouseClick: onMouseClick)
+                    }
+                    guard case .success(let payload) = payloadResult,
+                          let click = try? PCScreenProtocol.parseMouseClickPacket(header: header, payload: payload) else {
+                        return
+                    }
+                    onMouseClick(click)
+                }
+            }
+        }
+    }
+
     private func send(data: Data, completion: @escaping @Sendable (NWError?) -> Void) {
         connection.send(content: data, completion: .contentProcessed(completion))
+    }
+
+    private static func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        (UInt32(data[offset]) << 24)
+            | (UInt32(data[offset + 1]) << 16)
+            | (UInt32(data[offset + 2]) << 8)
+            | UInt32(data[offset + 3])
     }
 }

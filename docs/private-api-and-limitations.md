@@ -17,6 +17,8 @@ This repository isolates the private API calls under `macos-sender/Sources/PCScr
 
 The sender needs Screen Recording permission for the process that runs `PCScreenSender`, because `ScreenCaptureKit` is used to capture the virtual display.
 
+Mouse-click return posts synthetic left-click events through `CGEvent`, so the same process may also need Accessibility and Input Monitoring permission before clicks can control other apps.
+
 Recommended checks before running:
 
 1. Grant Screen Recording access to the terminal, IDE, or wrapper app you will use.
@@ -29,7 +31,7 @@ Recommended checks before running:
 - The sender assumes the created display is discoverable through `SCShareableContent.current`.
 - The sender does not implement display resize renegotiation.
 - There is no audio path.
-- There is no input return path.
+- Input return is limited to iPad left mouse clicks; keyboard input and gestures are not implemented.
 - There is no adaptive bitrate or network recovery.
 - The receiver uses `ffplay` rather than a custom Direct3D or Media Foundation renderer.
 

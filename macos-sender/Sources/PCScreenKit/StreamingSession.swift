@@ -10,6 +10,7 @@ public final class StreamingSession {
     private let sender: TCPSender
     private let displayConfiguration: VirtualDisplayConfiguration
     private var cursorTracker: CursorTracker?
+    private var mouseClickInjector: MouseClickInjector?
     private lazy var captureService: DisplayCaptureService = DisplayCaptureService(
         frameHandler: StreamingSession.makeFrameHandler(encoder: encoder)
     )
@@ -49,6 +50,11 @@ public final class StreamingSession {
                 height: UInt16(config.height)
             )
         )
+        let clickInjector = MouseClickInjector(displayID: displayID)
+        mouseClickInjector = clickInjector
+        sender.startReceivingInput { click in
+            clickInjector.click(click)
+        }
         try await captureService.start(
             displayID: displayID,
             width: config.width,
@@ -70,6 +76,7 @@ public final class StreamingSession {
     public func stop() async {
         cursorTracker?.stop()
         cursorTracker = nil
+        mouseClickInjector = nil
         await captureService.stop()
         encoder.stop()
         sender.close()
