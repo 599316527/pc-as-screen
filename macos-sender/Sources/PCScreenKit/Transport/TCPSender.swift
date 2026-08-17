@@ -5,6 +5,7 @@ protocol StreamTransport: AnyObject, Sendable {
     func connect(header: StreamHeader) async throws
     func sendFrame(_ frame: EncodedFrame, typeOverride: FrameType?) async throws
     func sendCursor(_ cursor: CursorPosition) async throws
+    func startReceivingInput(onMouseClick: @escaping @Sendable (MouseClick) -> Void)
     func close()
 }
 

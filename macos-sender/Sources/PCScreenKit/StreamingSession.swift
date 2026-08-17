@@ -54,7 +54,7 @@ public final class StreamingSession {
         )
         let clickInjector = MouseClickInjector(displayID: displayID)
         mouseClickInjector = clickInjector
-        sender.startReceivingInput { click in
+        await sender.startReceivingInput { click in
             clickInjector.click(click)
         }
         try await captureService.start(

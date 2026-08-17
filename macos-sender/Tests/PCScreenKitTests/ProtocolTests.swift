@@ -30,6 +30,8 @@ private final class ScriptedTransport: StreamTransport, @unchecked Sendable {
 
     func sendCursor(_ cursor: CursorPosition) async throws {}
 
+    func startReceivingInput(onMouseClick: @escaping @Sendable (MouseClick) -> Void) {}
+
     func close() {}
 }
 

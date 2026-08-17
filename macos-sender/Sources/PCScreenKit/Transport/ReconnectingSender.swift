@@ -6,6 +6,7 @@ actor ReconnectingSender {
     private let retryDelay: Duration
     private let transportFactory: TransportFactory
     private var header: StreamHeader?
+    private var mouseClickHandler: (@Sendable (MouseClick) -> Void)?
     private var transport: (any StreamTransport)?
     private var reconnectTask: Task<Void, Never>?
 
@@ -22,6 +23,9 @@ actor ReconnectingSender {
                 let transport = try transportFactory()
                 nextTransport = transport
                 try await transport.connect(header: header)
+                if let mouseClickHandler {
+                    transport.startReceivingInput(onMouseClick: mouseClickHandler)
+                }
                 self.transport = transport
                 return
             } catch {
@@ -54,12 +58,18 @@ actor ReconnectingSender {
         }
     }
 
+    func startReceivingInput(onMouseClick: @escaping @Sendable (MouseClick) -> Void) {
+        mouseClickHandler = onMouseClick
+        transport?.startReceivingInput(onMouseClick: onMouseClick)
+    }
+
     func stop() {
         reconnectTask?.cancel()
         reconnectTask = nil
         transport?.close()
         transport = nil
         header = nil
+        mouseClickHandler = nil
     }
 
     private func beginReconnect(afterFailureFrom failedTransport: any StreamTransport) {
@@ -81,6 +91,9 @@ actor ReconnectingSender {
                 let transport = try transportFactory()
                 nextTransport = transport
                 try await transport.connect(header: header)
+                if let mouseClickHandler {
+                    transport.startReceivingInput(onMouseClick: mouseClickHandler)
+                }
                 guard !Task.isCancelled else {
                     transport.close()
                     break
