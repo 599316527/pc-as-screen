@@ -85,6 +85,10 @@ public struct FramePacket: Equatable, Sendable {
         frameType == .cursor
     }
 
+    public var isConfig: Bool {
+        frameType == .config
+    }
+
     public var isKeyFrame: Bool {
         frameType == .key
     }

@@ -4,14 +4,21 @@ actor ReconnectingSender {
     typealias TransportFactory = @Sendable () throws -> any StreamTransport
 
     private let retryDelay: Duration
+    private let heartbeatInterval: Duration
     private let transportFactory: TransportFactory
     private var header: StreamHeader?
     private var mouseClickHandler: (@Sendable (MouseClick) -> Void)?
     private var transport: (any StreamTransport)?
     private var reconnectTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
 
-    init(retryDelay: Duration = .seconds(2), transportFactory: @escaping TransportFactory) {
+    init(
+        retryDelay: Duration = .seconds(2),
+        heartbeatInterval: Duration = .seconds(1),
+        transportFactory: @escaping TransportFactory
+    ) {
         self.retryDelay = retryDelay
+        self.heartbeatInterval = heartbeatInterval
         self.transportFactory = transportFactory
     }
 
@@ -27,6 +34,7 @@ actor ReconnectingSender {
                     transport.startReceivingInput(onMouseClick: mouseClickHandler)
                 }
                 self.transport = transport
+                startHeartbeat(for: transport)
                 return
             } catch {
                 nextTransport?.close()
@@ -66,6 +74,8 @@ actor ReconnectingSender {
     func stop() {
         reconnectTask?.cancel()
         reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         transport?.close()
         transport = nil
         header = nil
@@ -74,6 +84,8 @@ actor ReconnectingSender {
 
     private func beginReconnect(afterFailureFrom failedTransport: any StreamTransport) {
         guard transport === failedTransport, let header else { return }
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         failedTransport.close()
         transport = nil
         guard reconnectTask == nil else { return }
@@ -99,6 +111,7 @@ actor ReconnectingSender {
                     break
                 }
                 self.transport = transport
+                startHeartbeat(for: transport)
                 reconnectTask = nil
                 print("Stream connection restored.")
                 return
@@ -111,5 +124,30 @@ actor ReconnectingSender {
             }
         }
         reconnectTask = nil
+    }
+
+    private func startHeartbeat(for activeTransport: any StreamTransport) {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: heartbeatInterval)
+                    try await activeTransport.sendFrame(
+                        EncodedFrame(
+                            isKeyFrame: false,
+                            presentationTimestampMicros: 0,
+                            decodeTimestampMicros: 0,
+                            payload: Data()
+                        ),
+                        typeOverride: .config
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    beginReconnect(afterFailureFrom: activeTransport)
+                    return
+                }
+            }
+        }
     }
 }

@@ -133,6 +133,8 @@ public final class IPadStreamReceiver: @unchecked Sendable {
                 let packet = try PCScreenProtocol.parseFramePacket(header: frameHeader, payload: payload)
                 if packet.isCursor {
                     onEvent(.success(.cursor(try PCScreenProtocol.parseCursorPacket(packet))))
+                } else if packet.isConfig {
+                    continue
                 } else if let sampleBuffer = try sampleFactory.makeSampleBuffer(packet: packet, timescale: header.timescale) {
                     onEvent(.success(.videoSample(VideoSample(sampleBuffer: sampleBuffer))))
                 }

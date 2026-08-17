@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from typing import BinaryIO
@@ -64,8 +63,8 @@ class FFplayProcess:
         if self._process is None or self._process.stdin is None:
             return
         try:
-            os.close(self._process.stdin.fileno())
-        except OSError:
+            self._process.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
             pass
 
     def close(self) -> None:

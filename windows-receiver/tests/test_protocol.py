@@ -11,13 +11,16 @@ from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pc_as_screen_receiver.receiver import PlayerLifecycle, ReceiverConfig, run, stop_connection_when_player_exits
+from pc_as_screen_receiver.cursor import Rect, content_rect_for, map_cursor_to_screen
+from pc_as_screen_receiver.player import FFplayProcess
+from pc_as_screen_receiver.receiver import PlayerLifecycle, ReceiverConfig, handle_connection, run, stop_connection_when_player_exits
 from pc_as_screen_receiver.protocol import parse_cursor_packet, read_frame_packet, read_stream_header
 from pc_as_screen_receiver.protocol import (
     AUTH_ACCEPTED_MAGIC,
     AUTH_CHALLENGE_MAGIC,
     AUTH_REJECTED_MAGIC,
     AUTH_RESPONSE_MAGIC,
+    CursorPacket,
     authenticate_stream,
     make_auth_digest,
 )
@@ -42,9 +45,13 @@ class FakeConnection:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
         self.closed = False
+        self.timeout_seconds: float | None = None
 
     def makefile(self, mode: str) -> io.BytesIO:
         return io.BytesIO(self.payload)
+
+    def settimeout(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
 
     def close(self) -> None:
         self.closed = True
@@ -88,6 +95,71 @@ class FakeShutdownConnection:
 
     def shutdown(self, how: int) -> None:
         self.shutdown_how = how
+
+
+class TimedOutStream:
+    def __init__(self, first_read: bytes) -> None:
+        self._first_read = first_read
+
+    def read(self, size: int) -> bytes:
+        if self._first_read:
+            chunk = self._first_read[:size]
+            self._first_read = self._first_read[size:]
+            return chunk
+        raise TimeoutError("timed out")
+
+
+class TimeoutConnection(FakeConnection):
+    def makefile(self, mode: str) -> TimedOutStream:
+        return TimedOutStream(self.payload)
+
+
+class FakeStreamingPlayer:
+    instances: list["FakeStreamingPlayer"] = []
+
+    def __init__(self, ffplay_path: str | None = None) -> None:
+        self.ffplay_path = ffplay_path
+        self.payloads: list[bytes] = []
+        self.closed = Event()
+        self.started = False
+        FakeStreamingPlayer.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    @property
+    def process_id(self) -> int | None:
+        return None
+
+    @property
+    def has_exited(self) -> bool:
+        return False
+
+    def wait(self) -> int:
+        self.closed.wait(timeout=1)
+        return 0
+
+    def write(self, payload: bytes) -> None:
+        self.payloads.append(payload)
+
+    def close_input(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+class ClosableInput:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class ProcessWithClosableInput:
+    def __init__(self) -> None:
+        self.stdin = ClosableInput()
 
 
 class ProtocolTests(unittest.TestCase):
@@ -176,6 +248,82 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(player.input_closed)
         self.assertEqual(connection.shutdown_how, socket.SHUT_RDWR)
         self.assertTrue(lifecycle.exited.is_set())
+
+    def test_cursor_mapping_uses_letterboxed_video_rect(self) -> None:
+        content_rect = content_rect_for(Rect(left=0, top=0, right=2560, bottom=1600), video_width=1920, video_height=1080)
+
+        self.assertEqual(content_rect, Rect(left=0, top=80, right=2560, bottom=1520))
+        self.assertEqual(map_cursor_to_screen(CursorPacket(x=0, y=0, timestamp_micros=1), content_rect), (0, 80))
+        self.assertEqual(
+            map_cursor_to_screen(CursorPacket(x=65535, y=65535, timestamp_micros=1), content_rect),
+            (2559, 1519),
+        )
+
+    def test_config_heartbeat_is_not_written_to_player(self) -> None:
+        stream = (
+            b"PCSCRN1"
+            + bytes([1])
+            + bytes([0x07, 0x80, 0x04, 0x38, 0x00, 0x0F, 0x42, 0x40])
+            + bytes([0, 0, 0, 0, 0])
+            + (0).to_bytes(8, "big")
+            + (0).to_bytes(8, "big")
+            + bytes([2, 0, 0, 0, 5])
+            + (123).to_bytes(8, "big")
+            + (120).to_bytes(8, "big")
+            + b"video"
+        )
+        connection = FakeConnection(stream)
+        config = ReceiverConfig(host="127.0.0.1", port=6000, ffplay_path=None, password=None)
+        FakeStreamingPlayer.instances.clear()
+
+        with patch("pc_as_screen_receiver.receiver.FFplayProcess", FakeStreamingPlayer):
+            with redirect_stdout(io.StringIO()):
+                handle_connection(connection, ("127.0.0.1", 5000), config)
+
+        self.assertEqual(connection.timeout_seconds, config.stale_timeout_seconds)
+        self.assertEqual(FakeStreamingPlayer.instances[0].payloads, [b"video"])
+
+    def test_stale_stream_timeout_closes_current_player(self) -> None:
+        header = b"PCSCRN1" + bytes([1]) + bytes([0x07, 0x80, 0x04, 0x38, 0x00, 0x0F, 0x42, 0x40])
+        connection = TimeoutConnection(header)
+        config = ReceiverConfig(host="127.0.0.1", port=6000, ffplay_path=None, password=None)
+        FakeStreamingPlayer.instances.clear()
+
+        with patch("pc_as_screen_receiver.receiver.FFplayProcess", FakeStreamingPlayer):
+            with redirect_stdout(io.StringIO()):
+                handle_connection(connection, ("127.0.0.1", 5000), config)
+
+        self.assertEqual(connection.timeout_seconds, config.stale_timeout_seconds)
+        self.assertTrue(FakeStreamingPlayer.instances[0].closed.is_set())
+
+    def test_heartbeat_after_video_timeout_closes_current_player(self) -> None:
+        stream = (
+            b"PCSCRN1"
+            + bytes([1])
+            + bytes([0x07, 0x80, 0x04, 0x38, 0x00, 0x0F, 0x42, 0x40])
+            + bytes([0, 0, 0, 0, 0])
+            + (0).to_bytes(8, "big")
+            + (0).to_bytes(8, "big")
+        )
+        connection = FakeConnection(stream)
+        config = ReceiverConfig(host="127.0.0.1", port=6000, ffplay_path=None, password=None)
+        FakeStreamingPlayer.instances.clear()
+
+        with patch("pc_as_screen_receiver.receiver.FFplayProcess", FakeStreamingPlayer):
+            with patch("pc_as_screen_receiver.receiver.monotonic", side_effect=[0.0, 6.0]):
+                with redirect_stdout(io.StringIO()):
+                    handle_connection(connection, ("127.0.0.1", 5000), config)
+
+        self.assertTrue(FakeStreamingPlayer.instances[0].closed.is_set())
+
+    def test_ffplay_close_input_closes_stdin_file_object(self) -> None:
+        player = FFplayProcess(ffplay_path="ffplay")
+        process = ProcessWithClosableInput()
+        player._process = process
+
+        player.close_input()
+
+        self.assertTrue(process.stdin.closed)
 
 
 if __name__ == "__main__":

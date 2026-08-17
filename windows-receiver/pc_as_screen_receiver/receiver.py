@@ -6,6 +6,7 @@ import socket
 from contextlib import closing
 from dataclasses import dataclass
 from threading import Event, Thread
+from time import monotonic
 from typing import Protocol
 
 from .cursor import CursorController
@@ -19,6 +20,7 @@ class ReceiverConfig:
     port: int
     ffplay_path: str | None
     password: str | None
+    stale_timeout_seconds: float = 5.0
 
 
 class WaitablePlayer(Protocol):
@@ -79,9 +81,10 @@ def handle_connection(connection: socket.socket, address: tuple[str, int], confi
         authenticate_stream(stream, config.password)
         header = read_stream_header(stream)
         print(f"Stream header: codec={header.codec} resolution={header.width}x{header.height} timescale={header.timescale}")
+        connection.settimeout(config.stale_timeout_seconds)
         player = FFplayProcess(ffplay_path=config.ffplay_path)
         player.start()
-        cursor = CursorController(process_id=player.process_id)
+        cursor = CursorController(process_id=player.process_id, video_width=header.width, video_height=header.height)
         lifecycle = PlayerLifecycle(exited=Event(), receiver_stopping=Event())
         player_monitor = Thread(
             target=stop_connection_when_player_exits,
@@ -90,15 +93,26 @@ def handle_connection(connection: socket.socket, address: tuple[str, int], confi
             daemon=True,
         )
         player_monitor.start()
+        last_video_frame_at = monotonic()
         try:
             while True:
                 packet = read_frame_packet(stream)
                 if packet.is_cursor:
                     cursor.apply(parse_cursor_packet(packet))
+                elif packet.is_config:
+                    if monotonic() - last_video_frame_at > config.stale_timeout_seconds:
+                        print("Stream timed out waiting for video frames.")
+                        return
+                    continue
                 else:
                     player.write(packet.payload)
+                    last_video_frame_at = monotonic()
         except EOFError:
             print("Sender disconnected.")
+        except TimeoutError:
+            print("Stream timed out waiting for sender packets.")
+        except socket.timeout:
+            print("Stream timed out waiting for sender packets.")
         except OSError:
             if lifecycle.exited.is_set() or player.has_exited:
                 raise PlayerClosedError from None
