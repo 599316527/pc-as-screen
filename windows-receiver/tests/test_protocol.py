@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import socket
 import sys
+from threading import Event
 import unittest
 from unittest.mock import patch
 from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pc_as_screen_receiver.receiver import ReceiverConfig, run
+from pc_as_screen_receiver.receiver import PlayerLifecycle, ReceiverConfig, run, stop_connection_when_player_exits
 from pc_as_screen_receiver.protocol import parse_cursor_packet, read_frame_packet, read_stream_header
 from pc_as_screen_receiver.protocol import (
     AUTH_ACCEPTED_MAGIC,
@@ -61,6 +63,31 @@ class FakeServer:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakePlayer:
+    def __init__(self) -> None:
+        self.wait_count = 0
+        self.input_closed = False
+
+    @property
+    def has_exited(self) -> bool:
+        return True
+
+    def wait(self) -> int:
+        self.wait_count += 1
+        return 0
+
+    def close_input(self) -> None:
+        self.input_closed = True
+
+
+class FakeShutdownConnection:
+    def __init__(self) -> None:
+        self.shutdown_how: int | None = None
+
+    def shutdown(self, how: int) -> None:
+        self.shutdown_how = how
 
 
 class ProtocolTests(unittest.TestCase):
@@ -137,6 +164,18 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertEqual(fake_server.accept_count, 2)
         self.assertTrue(fake_server.closed)
+
+    def test_player_exit_closes_the_active_stream_connection(self) -> None:
+        player = FakePlayer()
+        connection = FakeShutdownConnection()
+        lifecycle = PlayerLifecycle(exited=Event(), receiver_stopping=Event())
+
+        stop_connection_when_player_exits(player, connection, lifecycle)
+
+        self.assertEqual(player.wait_count, 1)
+        self.assertTrue(player.input_closed)
+        self.assertEqual(connection.shutdown_how, socket.SHUT_RDWR)
+        self.assertTrue(lifecycle.exited.is_set())
 
 
 if __name__ == "__main__":

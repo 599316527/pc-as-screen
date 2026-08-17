@@ -1,6 +1,37 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import PCScreenKit
+
+private enum TestTransportError: Error {
+    case sendFailed
+}
+
+private final class ScriptedTransport: StreamTransport, @unchecked Sendable {
+    private let failsOnConnect: Bool
+    private let failsOnSend: Bool
+
+    init(failsOnConnect: Bool = false, failsOnSend: Bool) {
+        self.failsOnConnect = failsOnConnect
+        self.failsOnSend = failsOnSend
+    }
+
+    func connect(header: StreamHeader) async throws {
+        if failsOnConnect {
+            throw TestTransportError.sendFailed
+        }
+    }
+
+    func sendFrame(_ frame: EncodedFrame, typeOverride: FrameType?) async throws {
+        if failsOnSend {
+            throw TestTransportError.sendFailed
+        }
+    }
+
+    func sendCursor(_ cursor: CursorPosition) async throws {}
+
+    func close() {}
+}
 
 @Test
 func streamHeaderUsesExpectedBinaryLayout() {
@@ -81,4 +112,55 @@ func parsesMouseClickPacketFromReceiver() throws {
     #expect(click.x == 0x1234)
     #expect(click.y == 0xabcd)
     #expect(click.timestampMicros == 456)
+}
+
+@Test
+func reconnectingSenderCreatesANewTransportAfterSendFailure() async throws {
+    let creationCount = Mutex(0)
+    let sender = ReconnectingSender(
+        retryDelay: .zero,
+        transportFactory: {
+            let attempt = creationCount.withLock {
+                $0 += 1
+                return $0
+            }
+            return ScriptedTransport(failsOnSend: attempt == 1)
+        }
+    )
+    let frame = EncodedFrame(
+        isKeyFrame: true,
+        presentationTimestampMicros: 1,
+        decodeTimestampMicros: 1,
+        payload: Data([0x01])
+    )
+
+    try await sender.start(header: StreamHeader(width: 1440, height: 900))
+    await sender.sendFrame(frame)
+
+    for _ in 0..<100 where creationCount.withLock({ $0 }) < 2 {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    await sender.stop()
+
+    #expect(creationCount.withLock { $0 } == 2)
+}
+
+@Test
+func reconnectingSenderRetriesTheInitialConnection() async throws {
+    let creationCount = Mutex(0)
+    let sender = ReconnectingSender(
+        retryDelay: .zero,
+        transportFactory: {
+            let attempt = creationCount.withLock {
+                $0 += 1
+                return $0
+            }
+            return ScriptedTransport(failsOnConnect: attempt == 1, failsOnSend: false)
+        }
+    )
+
+    try await sender.start(header: StreamHeader(width: 1440, height: 900))
+    await sender.stop()
+
+    #expect(creationCount.withLock { $0 } == 2)
 }

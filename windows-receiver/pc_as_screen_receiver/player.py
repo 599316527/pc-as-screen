@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from typing import BinaryIO
@@ -41,6 +42,8 @@ class FFplayProcess:
     def write(self, payload: bytes) -> None:
         if self._process is None or self._process.stdin is None:
             raise RuntimeError("ffplay process has not been started")
+        if self._process.poll() is not None:
+            raise BrokenPipeError("ffplay exited")
         self._process.stdin.write(payload)
         self._process.stdin.flush()
 
@@ -48,11 +51,33 @@ class FFplayProcess:
     def process_id(self) -> int | None:
         return self._process.pid if self._process is not None else None
 
+    @property
+    def has_exited(self) -> bool:
+        return self._process is not None and self._process.poll() is not None
+
+    def wait(self) -> int:
+        if self._process is None:
+            raise RuntimeError("ffplay process has not been started")
+        return self._process.wait()
+
+    def close_input(self) -> None:
+        if self._process is None or self._process.stdin is None:
+            return
+        try:
+            os.close(self._process.stdin.fileno())
+        except OSError:
+            pass
+
     def close(self) -> None:
         if self._process is None:
             return
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
         if self._process.stdin is not None:
-            self._process.stdin.close()
-        self._process.terminate()
-        self._process.wait(timeout=5)
+            self.close_input()
         self._process = None

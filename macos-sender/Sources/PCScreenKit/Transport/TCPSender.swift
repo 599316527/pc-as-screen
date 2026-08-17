@@ -1,7 +1,14 @@
 import Foundation
 import Network
 
-public final class TCPSender: @unchecked Sendable {
+protocol StreamTransport: AnyObject, Sendable {
+    func connect(header: StreamHeader) async throws
+    func sendFrame(_ frame: EncodedFrame, typeOverride: FrameType?) async throws
+    func sendCursor(_ cursor: CursorPosition) async throws
+    func close()
+}
+
+public final class TCPSender: StreamTransport, @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "pc-as-screen.transport.sender")
     private let password: String?
@@ -41,6 +48,14 @@ public final class TCPSender: @unchecked Sendable {
                 case .failed(let error):
                     gate.runOnce {
                         continuation.resume(throwing: PCScreenError.network("TCP connection failed: \(error.localizedDescription)"))
+                    }
+                case .waiting(let error):
+                    gate.runOnce {
+                        continuation.resume(throwing: PCScreenError.network("TCP connection unavailable: \(error.localizedDescription)"))
+                    }
+                case .cancelled:
+                    gate.runOnce {
+                        continuation.resume(throwing: PCScreenError.network("TCP connection was cancelled."))
                     }
                 default:
                     break

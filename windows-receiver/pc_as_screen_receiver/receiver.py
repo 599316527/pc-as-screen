@@ -5,6 +5,8 @@ import os
 import socket
 from contextlib import closing
 from dataclasses import dataclass
+from threading import Event, Thread
+from typing import Protocol
 
 from .cursor import CursorController
 from .player import FFplayProcess
@@ -17,6 +19,25 @@ class ReceiverConfig:
     port: int
     ffplay_path: str | None
     password: str | None
+
+
+class WaitablePlayer(Protocol):
+    @property
+    def has_exited(self) -> bool: ...
+
+    def wait(self) -> int: ...
+
+    def close_input(self) -> None: ...
+
+
+class PlayerClosedError(Exception):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerLifecycle:
+    exited: Event
+    receiver_stopping: Event
 
 
 def parse_args() -> ReceiverConfig:
@@ -41,6 +62,9 @@ def run(config: ReceiverConfig) -> None:
             connection, address = server.accept()
             try:
                 handle_connection(connection, address, config)
+            except PlayerClosedError:
+                print("Player window closed. Receiver stopped.")
+                return
             except (EOFError, OSError, ValueError) as error:
                 print(f"Connection from {address[0]}:{address[1]} ended: {error}")
             finally:
@@ -58,6 +82,14 @@ def handle_connection(connection: socket.socket, address: tuple[str, int], confi
         player = FFplayProcess(ffplay_path=config.ffplay_path)
         player.start()
         cursor = CursorController(process_id=player.process_id)
+        lifecycle = PlayerLifecycle(exited=Event(), receiver_stopping=Event())
+        player_monitor = Thread(
+            target=stop_connection_when_player_exits,
+            args=(player, connection, lifecycle),
+            name="ffplay-exit-monitor",
+            daemon=True,
+        )
+        player_monitor.start()
         try:
             while True:
                 packet = read_frame_packet(stream)
@@ -67,9 +99,34 @@ def handle_connection(connection: socket.socket, address: tuple[str, int], confi
                     player.write(packet.payload)
         except EOFError:
             print("Sender disconnected.")
+        except OSError:
+            if lifecycle.exited.is_set() or player.has_exited:
+                raise PlayerClosedError from None
+            raise
         finally:
+            if player.has_exited:
+                lifecycle.exited.set()
+            lifecycle.receiver_stopping.set()
             if player is not None:
                 player.close()
+        if lifecycle.exited.is_set():
+            raise PlayerClosedError
+
+
+def stop_connection_when_player_exits(
+    player: WaitablePlayer,
+    connection: socket.socket,
+    lifecycle: PlayerLifecycle,
+) -> None:
+    player.wait()
+    if lifecycle.receiver_stopping.is_set():
+        return
+    lifecycle.exited.set()
+    player.close_input()
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 def main() -> None:

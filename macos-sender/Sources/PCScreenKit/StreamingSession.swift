@@ -7,7 +7,7 @@ public final class StreamingSession {
     private let config: StreamConfiguration
     private let virtualDisplayManager: VirtualDisplayManager
     private let encoder: H264Encoder
-    private let sender: TCPSender
+    private let sender: ReconnectingSender
     private let displayConfiguration: VirtualDisplayConfiguration
     private var cursorTracker: CursorTracker?
     private var mouseClickInjector: MouseClickInjector?
@@ -23,7 +23,9 @@ public final class StreamingSession {
             refreshRate: config.refreshRate,
             name: config.displayName
         )
-        let sender = try TCPSender(host: config.host, port: config.port, password: config.password)
+        let sender = ReconnectingSender {
+            try TCPSender(host: config.host, port: config.port, password: config.password)
+        }
         let frameQueue = DispatchQueue(label: "pc-as-screen.streaming.encoder")
         self.sender = sender
         self.virtualDisplayManager = VirtualDisplayManager()
@@ -35,7 +37,7 @@ public final class StreamingSession {
         ) { frame in
             frameQueue.async {
                 Task {
-                    try? await sender.sendFrame(frame)
+                    await sender.sendFrame(frame)
                 }
             }
         }
@@ -44,7 +46,7 @@ public final class StreamingSession {
     public func run() async throws {
         let displayID = try virtualDisplayManager.createDisplay(configuration: displayConfiguration)
         try encoder.start()
-        try await sender.connect(
+        try await sender.start(
             header: StreamHeader(
                 width: UInt16(config.width),
                 height: UInt16(config.height)
@@ -65,7 +67,7 @@ public final class StreamingSession {
         if config.showsCursor {
             let tracker = CursorTracker(displayID: displayID) { [sender] cursor in
                 Task {
-                    try? await sender.sendCursor(cursor)
+                    await sender.sendCursor(cursor)
                 }
             }
             cursorTracker = tracker
@@ -79,7 +81,7 @@ public final class StreamingSession {
         mouseClickInjector = nil
         await captureService.stop()
         encoder.stop()
-        sender.close()
+        await sender.stop()
         virtualDisplayManager.destroyDisplay()
     }
 
