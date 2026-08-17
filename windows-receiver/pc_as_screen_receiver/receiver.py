@@ -97,16 +97,21 @@ def handle_connection(connection: socket.socket, address: tuple[str, int], confi
         try:
             while True:
                 packet = read_frame_packet(stream)
+                if not packet.is_keyframe and not packet.is_config and not packet.is_cursor:
+                    player.write(packet.payload)
+                    last_video_frame_at = monotonic()
+                    continue
+                if packet.is_keyframe:
+                    player.write(packet.payload)
+                    last_video_frame_at = monotonic()
+                    continue
+                if monotonic() - last_video_frame_at > config.stale_timeout_seconds:
+                    print("Stream timed out waiting for video frames.")
+                    return
                 if packet.is_cursor:
                     cursor.apply(parse_cursor_packet(packet))
                 elif packet.is_config:
-                    if monotonic() - last_video_frame_at > config.stale_timeout_seconds:
-                        print("Stream timed out waiting for video frames.")
-                        return
                     continue
-                else:
-                    player.write(packet.payload)
-                    last_video_frame_at = monotonic()
         except EOFError:
             print("Sender disconnected.")
         except TimeoutError:
